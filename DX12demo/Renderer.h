@@ -14,7 +14,7 @@ struct Vertex
 {
     XMFLOAT3 position;
     XMFLOAT3 normal;
-    XMFLOAT3 color; // temporary, fine for now
+	XMFLOAT2 uv;
 };
 
 struct MVPConstants
@@ -48,8 +48,6 @@ private:
     UINT width;
     UINT height;
 
-    UINT lastFrameIndex = 0;
-
     // Core DX12 objects
     ComPtr<IDXGIFactory4> dxgiFactory;
     ComPtr<ID3D12Device> device;
@@ -70,7 +68,6 @@ private:
     ComPtr<ID3D12Fence> fence;
     UINT64 fenceValues[FrameCount];
     HANDLE fenceEvent;
-    UINT frameIndex;
     UINT64 nextFenceValue = 1;
 
 	// Viewport and Scissor
@@ -92,6 +89,9 @@ private:
     ComPtr<ID3D12DescriptorHeap> dsvHeap;
     UINT dsvDescriptorSize = 0;
 
+    // SRV heap
+    ComPtr<ID3D12DescriptorHeap> srvHeap;
+
 	// Index buffer
 	ComPtr<ID3D12Resource> indexBuffer;
 	D3D12_INDEX_BUFFER_VIEW indexBufferView;
@@ -99,6 +99,10 @@ private:
 	// MVP - Model-View-Projection constants buffer
     ComPtr<ID3D12Resource> constantBuffer;
     MVPConstants* cbData = nullptr;
+
+    // Texture
+    ComPtr<ID3D12Resource> texture;
+    ComPtr<ID3D12Resource> textureUpload;
 
     float rotX = 0.0f;
     float rotY = 0.0f;

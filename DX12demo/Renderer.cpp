@@ -3,6 +3,8 @@
 #include <stdexcept> // error handling
 #include <d3dcompiler.h>
 #include "d3dx12.h"
+#include <wincodec.h>
+#pragma comment(lib, "windowscodecs.lib")
 
 Renderer::Renderer(HWND hwnd, UINT w, UINT h)
     : width(w), height(h)
@@ -13,15 +15,138 @@ Renderer::Renderer(HWND hwnd, UINT w, UINT h)
 Renderer::~Renderer()
 {
     // Make sure GPU is done with all work
-    const UINT64 finalFenceValue = fenceValues[lastFrameIndex];
+    const UINT64 fenceToWaitFor = nextFenceValue++;
+    commandQueue->Signal(fence.Get(), fenceToWaitFor);
 
-    if (fence->GetCompletedValue() < finalFenceValue)
+    if (fence->GetCompletedValue() < fenceToWaitFor)
     {
-        fence->SetEventOnCompletion(finalFenceValue, fenceEvent);
+        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
         WaitForSingleObject(fenceEvent, INFINITE);
     }
 
     CloseHandle(fenceEvent);
+}
+
+void LoadTextureFromFile(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* cmd,
+    const wchar_t* filename,
+    ID3D12Resource** texture,
+    ID3D12Resource** uploadHeap)
+{
+    // Initialize WIC
+    ComPtr<IWICImagingFactory> factory;
+
+    CoCreateInstance(
+        CLSID_WICImagingFactory,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&factory)
+    );
+
+    // Load image
+    ComPtr<IWICBitmapDecoder> decoder;
+    factory->CreateDecoderFromFilename(
+        filename,
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad,
+        &decoder
+    );
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    decoder->GetFrame(0, &frame);
+
+    // Convert to RGBA
+    ComPtr<IWICFormatConverter> converter;
+    factory->CreateFormatConverter(&converter);
+
+    converter->Initialize(
+        frame.Get(),
+        GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone,
+        nullptr,
+        0.0,
+        WICBitmapPaletteTypeCustom
+    );
+
+    UINT width, height;
+    converter->GetSize(&width, &height);
+
+    std::vector<BYTE> imageData(width * height * 4);
+
+    converter->CopyPixels(
+        nullptr,
+        width * 4,
+        (UINT)imageData.size(),
+        imageData.data()
+    );
+
+    // Create GPU texture
+    auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        width,
+        height);
+
+	auto defaultHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+    device->CreateCommittedResource(
+        &defaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(texture)
+    );
+
+    // Upload heap
+    UINT64 uploadSize;
+    device->GetCopyableFootprints(
+        &texDesc,
+        0, 1, 0,
+        nullptr,
+        nullptr,
+        nullptr,
+        &uploadSize
+    );
+
+	auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+
+    D3D12_RESOURCE_DESC uploadDesc =
+        CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+
+    device->CreateCommittedResource(
+        &uploadHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &uploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(uploadHeap)
+    );
+
+    // Copy data
+    D3D12_SUBRESOURCE_DATA sub = {};
+    sub.pData = imageData.data();
+    sub.RowPitch = width * 4;
+    sub.SlicePitch = sub.RowPitch * height;
+
+    UpdateSubresources(
+        cmd,
+        *texture,
+        *uploadHeap,
+        0, 0, 1,
+        &sub
+    );
+
+    // Transition
+    auto barrier =
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            *texture,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+        );
+
+    cmd->ResourceBarrier(1, &barrier);
 }
 
 void Renderer::InitD3D(HWND hwnd)
@@ -135,6 +260,17 @@ void Renderer::InitD3D(HWND hwnd)
         D3D12_DESCRIPTOR_HEAP_TYPE_DSV
     );
 
+    // Create SRV heap (for textures)
+    D3D12_DESCRIPTOR_HEAP_DESC srvDesc = {};
+    srvDesc.NumDescriptors = 1;
+    srvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+
+    device->CreateDescriptorHeap(
+        &srvDesc,
+        IID_PPV_ARGS(&srvHeap)
+    );
+
 	// Create depth buffer
     D3D12_RESOURCE_DESC depthDesc = {};
     depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -186,19 +322,45 @@ void Renderer::InitD3D(HWND hwnd)
     if (!vsBlob || !psBlob)
         throw std::runtime_error("Failed to load shaders");
 
-    // Create root signature
-    //D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    //rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    // Descriptor range for SRV (t0)
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0; // t0
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart =
+        D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParam = {};
-    rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParam.Descriptor.ShaderRegister = 0; // b0
-    rootParam.Descriptor.RegisterSpace = 0;
-    rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Root parameters
+    D3D12_ROOT_PARAMETER params[2] = {};
+
+    // b0 constant buffer
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor.ShaderRegister = 0;
+    params[0].Descriptor.RegisterSpace = 0;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // t0 texture
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Add sampler
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.ShaderRegister = 0; // s0
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &rootParam;
+    rsDesc.NumParameters = 2;
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serializedRS, error;
@@ -208,6 +370,11 @@ void Renderer::InitD3D(HWND hwnd)
         &serializedRS,
         &error
     );
+
+    if (error)
+    {
+        OutputDebugStringA((char*)error->GetBufferPointer());
+    }
 
     device->CreateRootSignature(
         0,
@@ -234,10 +401,10 @@ void Renderer::InitD3D(HWND hwnd)
             0
         },
         {
-            "COLOR", 0,
-            DXGI_FORMAT_R32G32B32_FLOAT,
-            0, 24,
-            D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+			"TEXCOORD", 0,
+			DXGI_FORMAT_R32G32_FLOAT,
+			0, 24,
+			D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             0
         }
     };
@@ -299,58 +466,49 @@ void Renderer::InitD3D(HWND hwnd)
     for (UINT i = 0; i < FrameCount; ++i)
         fenceValues[i] = 0;
 
-    // Demo hack by chatgpt after asked to stop demo hacking
-    //Vertex triangleVertices[] =
-    //{
-    //    { {  0.0f,  0.25f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
-    //    { {  0.25f, -0.25f, 0.0f }, { 0.0f, 1.0f, 0.0f } },
-    //    { { -0.25f, -0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f } },
-    //};
-
     Vertex cubeVertices[] =
     {
         // +Z (front)
-        {{-0.5f, -0.5f,  0.5f}, { 0,  0,  1}, {1, 0, 0}},
-        {{-0.5f,  0.5f,  0.5f}, { 0,  0,  1}, {1, 0, 0}},
-        {{ 0.5f,  0.5f,  0.5f}, { 0,  0,  1}, {1, 0, 0}},
-        {{ 0.5f, -0.5f,  0.5f}, { 0,  0,  1}, {1, 0, 0}},
+        {{-0.5f, -0.5f,  0.5f}, {0,0,1}, {0,1}},
+        {{-0.5f,  0.5f,  0.5f}, {0,0,1}, {0,0}},
+        {{ 0.5f,  0.5f,  0.5f}, {0,0,1}, {1,0}},
+        {{ 0.5f, -0.5f,  0.5f}, {0,0,1}, {1,1}},
 
         // -Z (back)
-        {{ 0.5f, -0.5f, -0.5f}, { 0,  0, -1}, {0, 1, 0}},
-        {{ 0.5f,  0.5f, -0.5f}, { 0,  0, -1}, {0, 1, 0}},
-        {{-0.5f,  0.5f, -0.5f}, { 0,  0, -1}, {0, 1, 0}},
-        {{-0.5f, -0.5f, -0.5f}, { 0,  0, -1}, {0, 1, 0}},
+        {{ 0.5f, -0.5f, -0.5f}, {0,0,-1}, {0,1}},
+        {{ 0.5f,  0.5f, -0.5f}, {0,0,-1}, {0,0}},
+        {{-0.5f,  0.5f, -0.5f}, {0,0,-1}, {1,0}},
+        {{-0.5f, -0.5f, -0.5f}, {0,0,-1}, {1,1}},
 
         // +X (right)
-        {{ 0.5f, -0.5f,  0.5f}, { 1,  0,  0}, {0, 0, 1}},
-        {{ 0.5f,  0.5f,  0.5f}, { 1,  0,  0}, {0, 0, 1}},
-        {{ 0.5f,  0.5f, -0.5f}, { 1,  0,  0}, {0, 0, 1}},
-        {{ 0.5f, -0.5f, -0.5f}, { 1,  0,  0}, {0, 0, 1}},
+        {{ 0.5f, -0.5f,  0.5f}, {1,0,0}, {0,1}},
+        {{ 0.5f,  0.5f,  0.5f}, {1,0,0}, {0,0}},
+        {{ 0.5f,  0.5f, -0.5f}, {1,0,0}, {1,0}},
+        {{ 0.5f, -0.5f, -0.5f}, {1,0,0}, {1,1}},
 
         // -X (left)
-        {{-0.5f, -0.5f, -0.5f}, {-1,  0,  0}, {1, 1, 0}},
-        {{-0.5f,  0.5f, -0.5f}, {-1,  0,  0}, {1, 1, 0}},
-        {{-0.5f,  0.5f,  0.5f}, {-1,  0,  0}, {1, 1, 0}},
-        {{-0.5f, -0.5f,  0.5f}, {-1,  0,  0}, {1, 1, 0}},
+        {{-0.5f, -0.5f, -0.5f}, {-1,0,0}, {0,1}},
+        {{-0.5f,  0.5f, -0.5f}, {-1,0,0}, {0,0}},
+        {{-0.5f,  0.5f,  0.5f}, {-1,0,0}, {1,0}},
+        {{-0.5f, -0.5f,  0.5f}, {-1,0,0}, {1,1}},
 
         // +Y (top)
-        {{-0.5f,  0.5f,  0.5f}, { 0,  1,  0}, {1, 0, 1}},
-        {{-0.5f,  0.5f, -0.5f}, { 0,  1,  0}, {1, 0, 1}},
-        {{ 0.5f,  0.5f, -0.5f}, { 0,  1,  0}, {1, 0, 1}},
-        {{ 0.5f,  0.5f,  0.5f}, { 0,  1,  0}, {1, 0, 1}},
+        {{-0.5f,  0.5f,  0.5f}, {0,1,0}, {0,1}},
+        {{-0.5f,  0.5f, -0.5f}, {0,1,0}, {0,0}},
+        {{ 0.5f,  0.5f, -0.5f}, {0,1,0}, {1,0}},
+        {{ 0.5f,  0.5f,  0.5f}, {0,1,0}, {1,1}},
 
         // -Y (bottom)
-        {{-0.5f, -0.5f, -0.5f}, { 0, -1,  0}, {0, 1, 1}},
-        {{-0.5f, -0.5f,  0.5f}, { 0, -1,  0}, {0, 1, 1}},
-        {{ 0.5f, -0.5f,  0.5f}, { 0, -1,  0}, {0, 1, 1}},
-        {{ 0.5f, -0.5f, -0.5f}, { 0, -1,  0}, {0, 1, 1}},
+        {{-0.5f, -0.5f, -0.5f}, {0,-1,0}, {0,1}},
+        {{-0.5f, -0.5f,  0.5f}, {0,-1,0}, {0,0}},
+        {{ 0.5f, -0.5f,  0.5f}, {0,-1,0}, {1,0}},
+        {{ 0.5f, -0.5f, -0.5f}, {0,-1,0}, {1,1}},
     };
 
     const UINT vertexBufferSize = sizeof(cubeVertices);
 
     // Create upload heap
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
 
     D3D12_RESOURCE_DESC resDesc = {};
     resDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -463,8 +621,46 @@ void Renderer::InitD3D(HWND hwnd)
         IID_PPV_ARGS(&commandList)
     );
 
-    // Close immediately, we’ll reset it later
     commandList->Close();
+
+    commandList->Reset(commandAllocators[0].Get(), nullptr);
+
+    // Load texture
+    LoadTextureFromFile(
+        device.Get(),
+        commandList.Get(),
+        L"texture.png",
+        texture.GetAddressOf(),
+        textureUpload.GetAddressOf()
+    );
+
+    commandList->Close();
+
+    ID3D12CommandList* lists[] = { commandList.Get() };
+    commandQueue->ExecuteCommandLists(1, lists);
+
+    // Wait for upload
+    const UINT64 fenceVal = nextFenceValue++;
+    commandQueue->Signal(fence.Get(), fenceVal);
+
+    if (fence->GetCompletedValue() < fenceVal)
+    {
+        fence->SetEventOnCompletion(fenceVal, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+
+	// Create shader resource view (SRV) for the texture
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Texture2D.MipLevels = 1;
+
+    device->CreateShaderResourceView(
+        texture.Get(),
+        &srv,
+        srvHeap->GetCPUDescriptorHandleForHeapStart()
+    );
 }
 
 void Renderer::Render()
@@ -481,12 +677,6 @@ void Renderer::Render()
     commandAllocators[frameIndex]->Reset();
     commandList->Reset(commandAllocators[frameIndex].Get(), pipelineState.Get());
 
-    // World (rotate cube slowly)
-    /*static float angle = 0.0f;
-    angle += 0.01f;
-
-    XMMATRIX world = XMMatrixRotationY(angle);*/
-
     // Keyboard rotation of cube
     float speed = 3.0f * (1.0f / 60.0f); // radians per frame (simple)
 
@@ -500,10 +690,6 @@ void Renderer::Render()
 
 
     // --- World matrix ---
-
-    /*XMMATRIX world =
-        XMMatrixRotationX(rotX) *
-        XMMatrixRotationY(rotY);*/
     XMMATRIX world = XMMatrixRotationRollPitchYaw(rotX, rotY, 0.0f);
 
     // Camera
@@ -563,9 +749,11 @@ void Renderer::Render()
     commandList->RSSetScissorRects(1, &scissorRect);
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
-    //commandList->DrawInstanced(3, 1, 0, 0);
     commandList->IASetIndexBuffer(&indexBufferView);
     commandList->SetGraphicsRootConstantBufferView(0, constantBuffer->GetGPUVirtualAddress());
+    ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
+    commandList->SetDescriptorHeaps(1, heaps);
+    commandList->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
     commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
 
     // Transition: RENDER_TARGET -> PRESENT

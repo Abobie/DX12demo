@@ -26,13 +26,12 @@ int WINAPI WinMain(
     int nCmdShow)
 {
     // Some parameters
-    const UINT FrameCount = 2;
     const UINT WindowWidth = 1280;
     const UINT WindowHeight = 720;
-    UINT fenceValue = 0;
-    HANDLE fenceEvent = nullptr;
 
     const wchar_t CLASS_NAME[] = L"DX12DemoWindowClass";
+
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     // Set up a basic window
     WNDCLASS wc = {};
@@ -73,6 +72,8 @@ int WINAPI WinMain(
             renderer.Render();
         }
     }
+
+    CoUninitialize();
 
     return 0;
 }

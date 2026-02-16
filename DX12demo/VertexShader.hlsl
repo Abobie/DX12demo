@@ -15,14 +15,14 @@ struct VSInput
 {
     float3 pos : POSITION;
     float3 normal : NORMAL;
-    float3 color : COLOR;
+    float2 uv : TEXCOORD;
 };
 
 struct PSInput
 {
     float4 pos : SV_POSITION;
     float3 normal : NORMAL;
-    float3 color : COLOR;
+    float2 uv : TEXCOORD;
 };
 
 PSInput main(VSInput input)
@@ -38,7 +38,7 @@ PSInput main(VSInput input)
     output.pos = pos;
 
     output.normal = mul(input.normal, (float3x3) world);
-    output.color = input.color;
+    output.uv = input.uv;
 
     return output;
 }
