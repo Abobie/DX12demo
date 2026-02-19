@@ -24,11 +24,20 @@ struct MVPConstants
     XMFLOAT4X4 view;
     XMFLOAT4X4 projection;
 
-    XMFLOAT3 lightDir;
+    XMFLOAT3 ambientColor;
     float pad1;
 
-    XMFLOAT3 lightColor;
+    XMFLOAT3 directionalLightDir;
     float pad2;
+
+    XMFLOAT3 directionalLightColor;
+    float pad3;
+
+    XMFLOAT3 pointLightPosition;
+    float pointLightRange;
+
+    XMFLOAT3 pointLightColor;
+    float pad4;
 };
 
 struct GameObject
@@ -36,6 +45,7 @@ struct GameObject
     XMFLOAT3 position;
     XMFLOAT3 rotation;
     XMFLOAT3 scale;
+    float moveSpeed = 0.5f;
 };
 
 struct Camera

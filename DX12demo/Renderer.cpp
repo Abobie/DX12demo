@@ -741,6 +741,75 @@ void Renderer::Render()
     commandAllocators[frameIndex]->Reset();
     commandList->Reset(commandAllocators[frameIndex].Get(), pipelineState.Get());
 
+    // Compute cube movement
+    XMVECTOR camPos = XMLoadFloat3(&camera.position);
+
+    for (UINT i = 0; i < sceneObjects.size(); ++i)
+    {
+        // Skip floor and walls
+        // Assume first few objects are room pieces
+        if (i < 6) continue;
+
+        XMVECTOR objPos = XMLoadFloat3(&sceneObjects[i].position);
+
+        // Direction from cube to camera
+        XMVECTOR toCamera = camPos - objPos;
+
+        // Remove Y component (stay on ground)
+        toCamera = XMVectorSetY(toCamera, 0.0f);
+
+        float length = XMVectorGetX(XMVector3Length(toCamera));
+
+        if (length > 0.01f) // avoid jitter when very close
+        {
+            XMVECTOR direction = XMVector3Normalize(toCamera);
+
+            objPos += direction * sceneObjects[i].moveSpeed * deltaTime;
+
+            XMStoreFloat3(&sceneObjects[i].position, objPos);
+        }
+    }
+
+	// Cube collision resolution (simple AABB)
+    for (int i = 6; i < sceneObjects.size(); ++i)
+    {
+        for (int j = i + 1; j < sceneObjects.size(); ++j)
+        {
+            XMFLOAT3& posA = sceneObjects[i].position;
+            XMFLOAT3& posB = sceneObjects[j].position;
+
+            float halfA = sceneObjects[i].scale.x * 0.5f;
+            float halfB = sceneObjects[j].scale.x * 0.5f;
+
+            float dx = posB.x - posA.x;
+            float dz = posB.z - posA.z;
+
+            float overlapX = (halfA + halfB) - fabsf(dx);
+            float overlapZ = (halfA + halfB) - fabsf(dz);
+
+            if (overlapX > 0 && overlapZ > 0)
+            {
+                // Resolve along smallest axis
+                if (overlapX < overlapZ)
+                {
+                    float push = overlapX * 0.5f;
+                    float dir = (dx > 0) ? 1.0f : -1.0f;
+
+                    posA.x -= dir * push;
+                    posB.x += dir * push;
+                }
+                else
+                {
+                    float push = overlapZ * 0.5f;
+                    float dir = (dz > 0) ? 1.0f : -1.0f;
+
+                    posA.z -= dir * push;
+                    posB.z += dir * push;
+                }
+            }
+        }
+    }
+
     // Mouse input for rotating camera
     POINT mousePos;
     GetCursorPos(&mousePos);
@@ -810,7 +879,6 @@ void Renderer::Render()
     XMStoreFloat3(&camera.position, position);
 
     // Camera
-    XMVECTOR camPos = XMLoadFloat3(&camera.position);
     XMVECTOR camTarget = camPos + forward;
 
     XMMATRIX view =
@@ -830,9 +898,15 @@ void Renderer::Render()
             0.1f,
             100.0f);
 
-    // Directional light (world space)
-    cbData->lightDir = XMFLOAT3(0.3f, -1.0f, 0.2f);
-    cbData->lightColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
+	// Set light color and direction
+    cbData->ambientColor = { 0.15f, 0.15f, 0.18f };
+
+    cbData->directionalLightDir = { -0.5f, -1.0f, -0.3f };
+    cbData->directionalLightColor = { 0.0f, 0.0f, 0.0f };
+
+    cbData->pointLightPosition = camera.position;
+    cbData->pointLightRange = 50.0f;
+    cbData->pointLightColor = { 0.4f, 0.4f, 1.0f };
 
     // Transition: PRESENT -> RENDER_TARGET
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -912,8 +986,12 @@ void Renderer::Render()
             XMMatrixTranspose(proj)
         );
 
-        objCB->lightDir = cbData->lightDir;
-        objCB->lightColor = cbData->lightColor;
+        objCB->ambientColor = cbData->ambientColor;
+        objCB->directionalLightDir = cbData->directionalLightDir;
+        objCB->directionalLightColor = cbData->directionalLightColor;
+		objCB->pointLightPosition = cbData->pointLightPosition;
+		objCB->pointLightRange = cbData->pointLightRange;
+		objCB->pointLightColor = cbData->pointLightColor;
 
         D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
             constantBuffer->GetGPUVirtualAddress()
