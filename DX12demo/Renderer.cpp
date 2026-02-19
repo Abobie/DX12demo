@@ -10,6 +10,9 @@ Renderer::Renderer(HWND hwnd, UINT w, UINT h)
     : width(w), height(h)
 {
     InitD3D(hwnd);
+
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&lastTime);
 }
 
 Renderer::~Renderer()
@@ -586,7 +589,9 @@ void Renderer::InitD3D(HWND hwnd)
     indexBufferView.Format = DXGI_FORMAT_R16_UINT;
 
     // Create constant buffer (256-byte aligned)
-    const UINT cbSize = (sizeof(MVPConstants) + 255) & ~255;
+    objectCount = 128;
+    cbStride = (sizeof(MVPConstants) + 255) & ~255;
+    const UINT cbSize = cbStride * objectCount;
 
     D3D12_HEAP_PROPERTIES cbHeapProps = {};
     cbHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -629,7 +634,7 @@ void Renderer::InitD3D(HWND hwnd)
     LoadTextureFromFile(
         device.Get(),
         commandList.Get(),
-        L"texture.png",
+        L"lava.jpg",
         texture.GetAddressOf(),
         textureUpload.GetAddressOf()
     );
@@ -661,10 +666,69 @@ void Renderer::InitD3D(HWND hwnd)
         &srv,
         srvHeap->GetCPUDescriptorHandleForHeapStart()
     );
+
+    // Build test world
+    // Floor
+    sceneObjects.push_back({
+        { 0.0f, -1.0f, 0.0f },  // position
+        { 0.0f, 0.0f, 0.0f },   // rotation
+        { 20.0f, 1.0f, 20.0f }  // scale
+        });
+
+    // Ceiling
+    sceneObjects.push_back({
+        { 0.0f, 7.0f, 0.0f },
+        { 0.0f, 0.0f, 0.0f },
+        { 20.0f, 1.0f, 20.0f }
+        });
+
+    // Back wall
+    sceneObjects.push_back({
+        { 0.0f, 3.5f, 10.0f },
+        { 0.0f, 0.0f, 0.0f },
+        { 20.0f, 8.0f, 1.0f }
+        });
+
+    // Front wall
+    sceneObjects.push_back({
+        { 0.0f, 3.5f, -10.0f },
+        { 0.0f, 0.0f, 0.0f },
+        { 20.0f, 8.0f, 1.0f }
+        });
+
+    // Left wall
+    sceneObjects.push_back({
+        { -10.0f, 3.5f, 0.0f },
+        { 0.0f, XM_PIDIV2, 0.0f },
+        { 20.0f, 8.0f, 1.0f }
+        });
+
+    // Right wall
+    sceneObjects.push_back({
+        { 10.0f, 3.5f, 0.0f },
+        { 0.0f, XM_PIDIV2, 0.0f },
+        { 20.0f, 8.0f, 1.0f }
+        });
+
+    // Random cubes
+    sceneObjects.push_back({ { 3,0,3 },{0,0,0},{1,2,1} });
+    sceneObjects.push_back({ { -4,0,2 },{0,0,0},{1,3,1} });
+    sceneObjects.push_back({ { 0,0,-4 },{0,0,0},{2,1,2} });
 }
 
 void Renderer::Render()
 {
+    // Time
+    LARGE_INTEGER currentTime;
+    QueryPerformanceCounter(&currentTime);
+
+    float deltaTime =
+        float(currentTime.QuadPart - lastTime.QuadPart) /
+        float(frequency.QuadPart);
+
+    lastTime = currentTime;
+
+	// Swap chain frame index
     UINT frameIndex = swapChain->GetCurrentBackBufferIndex();
 
 	// Fence wait
@@ -677,27 +741,84 @@ void Renderer::Render()
     commandAllocators[frameIndex]->Reset();
     commandList->Reset(commandAllocators[frameIndex].Get(), pipelineState.Get());
 
-    // Keyboard rotation of cube
-    float speed = 3.0f * (1.0f / 60.0f); // radians per frame (simple)
+    // Mouse input for rotating camera
+    POINT mousePos;
+    GetCursorPos(&mousePos);
+    ScreenToClient(GetActiveWindow(), &mousePos);
 
-    // Pitch (up/down)
-    if (GetAsyncKeyState('W') & 0x8000) rotX -= speed;
-    if (GetAsyncKeyState('S') & 0x8000) rotX += speed;
+    static POINT lastMousePos = mousePos;
 
-    // Yaw (left/right)
-    if (GetAsyncKeyState('A') & 0x8000) rotY -= speed;
-    if (GetAsyncKeyState('D') & 0x8000) rotY += speed;
+    float deltaX = float(mousePos.x - lastMousePos.x);
+    float deltaY = float(mousePos.y - lastMousePos.y);
 
+    lastMousePos = mousePos;
 
-    // --- World matrix ---
-    XMMATRIX world = XMMatrixRotationRollPitchYaw(rotX, rotY, 0.0f);
+    camera.yaw += deltaX * camera.mouseSensitivity;
+    camera.pitch -= deltaY * camera.mouseSensitivity;
+
+    const float limit = XM_PIDIV2 - 0.01f;
+
+    if (camera.pitch > limit) camera.pitch = limit;
+    if (camera.pitch < -limit) camera.pitch = -limit;
+
+    // Recenter cursor in window
+    RECT rect;
+    GetClientRect(GetActiveWindow(), &rect);
+
+    POINT center;
+    center.x = rect.right / 2;
+    center.y = rect.bottom / 2;
+
+    ClientToScreen(GetActiveWindow(), &center);
+    SetCursorPos(center.x, center.y);
+
+    lastMousePos = { rect.right / 2, rect.bottom / 2 };
+
+    XMVECTOR forward =
+        XMVectorSet(
+            cosf(camera.pitch) * sinf(camera.yaw),
+            sinf(camera.pitch),
+            cosf(camera.pitch) * cosf(camera.yaw),
+            0.0f
+        );
+
+    XMVECTOR right =
+        XMVector3Normalize(
+            XMVector3Cross(
+                XMVectorSet(0, 1, 0, 0),
+                forward
+            )
+        );
+
+    XMVECTOR up = XMVector3Cross(forward, right);
+
+    // WASD movement
+    XMVECTOR position = XMLoadFloat3(&camera.position);
+
+    if (GetAsyncKeyState('W') & 0x8000)
+        position += forward * camera.moveSpeed * deltaTime;
+
+    if (GetAsyncKeyState('S') & 0x8000)
+        position -= forward * camera.moveSpeed * deltaTime;
+
+    if (GetAsyncKeyState('D') & 0x8000)
+        position += right * camera.moveSpeed * deltaTime;
+
+    if (GetAsyncKeyState('A') & 0x8000)
+        position -= right * camera.moveSpeed * deltaTime;
+
+    XMStoreFloat3(&camera.position, position);
 
     // Camera
-    XMVECTOR eye = XMVectorSet(0, 1.5f, -3.0f, 1);
-    XMVECTOR at = XMVectorSet(0, 0, 0, 1);
-    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
+    XMVECTOR camPos = XMLoadFloat3(&camera.position);
+    XMVECTOR camTarget = camPos + forward;
 
-    XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
+    XMMATRIX view =
+        XMMatrixLookAtLH(
+            camPos,
+            camTarget,
+            up
+        );
 
     // Projection
     float aspect = (float)width / height;
@@ -708,11 +829,6 @@ void Renderer::Render()
             aspect,
             0.1f,
             100.0f);
-
-    // Store matrices separately (transpose for HLSL)
-    XMStoreFloat4x4(&cbData->world, XMMatrixTranspose(world));
-    XMStoreFloat4x4(&cbData->view, XMMatrixTranspose(view));
-    XMStoreFloat4x4(&cbData->projection, XMMatrixTranspose(proj));
 
     // Directional light (world space)
     cbData->lightDir = XMFLOAT3(0.3f, -1.0f, 0.2f);
@@ -750,11 +866,66 @@ void Renderer::Render()
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
     commandList->IASetIndexBuffer(&indexBufferView);
-    commandList->SetGraphicsRootConstantBufferView(0, constantBuffer->GetGPUVirtualAddress());
     ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
     commandList->SetDescriptorHeaps(1, heaps);
     commandList->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
-    commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+
+	// Draw all objects in the scene
+    for (size_t i = 0; i < sceneObjects.size(); i++)
+    {
+        const auto& obj = sceneObjects[i];
+
+        XMMATRIX scale =
+            XMMatrixScaling(obj.scale.x, obj.scale.y, obj.scale.z);
+
+        XMMATRIX rot =
+            XMMatrixRotationRollPitchYaw(
+                obj.rotation.x,
+                obj.rotation.y,
+                obj.rotation.z);
+
+        XMMATRIX trans =
+            XMMatrixTranslation(
+                obj.position.x,
+                obj.position.y,
+                obj.position.z);
+
+        XMMATRIX world = scale * rot * trans;
+
+        MVPConstants* objCB =
+            (MVPConstants*)(
+                (uint8_t*)cbData + i * cbStride
+                );
+
+        XMStoreFloat4x4(
+            &objCB->world,
+            XMMatrixTranspose(world)
+        );
+
+        XMStoreFloat4x4(
+            &objCB->view,
+            XMMatrixTranspose(view)
+        );
+
+        XMStoreFloat4x4(
+            &objCB->projection,
+            XMMatrixTranspose(proj)
+        );
+
+        objCB->lightDir = cbData->lightDir;
+        objCB->lightColor = cbData->lightColor;
+
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
+            constantBuffer->GetGPUVirtualAddress()
+            + i * cbStride;
+
+        commandList->SetGraphicsRootConstantBufferView(
+            0,
+            cbAddress
+        );
+
+        commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+    }
 
     // Transition: RENDER_TARGET -> PRESENT
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;

@@ -5,6 +5,7 @@
 #include <d3d12.h>
 #include <wrl.h>    // For ComPtr
 #include <DirectXMath.h>
+#include <vector>
 
 using namespace DirectX;
 
@@ -28,6 +29,24 @@ struct MVPConstants
 
     XMFLOAT3 lightColor;
     float pad2;
+};
+
+struct GameObject
+{
+    XMFLOAT3 position;
+    XMFLOAT3 rotation;
+    XMFLOAT3 scale;
+};
+
+struct Camera
+{
+    XMFLOAT3 position = { 0.0f, 1.5f, -5.0f };
+
+    float yaw = 0.0f;   // rotation around Y
+    float pitch = 0.0f; // rotation around X
+
+    float moveSpeed = 5.0f;
+    float mouseSensitivity = 0.002f;
 };
 
 class Renderer
@@ -99,11 +118,20 @@ private:
 	// MVP - Model-View-Projection constants buffer
     ComPtr<ID3D12Resource> constantBuffer;
     MVPConstants* cbData = nullptr;
+	UINT objectCount;
+    UINT cbStride = 0;
 
     // Texture
     ComPtr<ID3D12Resource> texture;
     ComPtr<ID3D12Resource> textureUpload;
 
-    float rotX = 0.0f;
-    float rotY = 0.0f;
+	// Game object
+    std::vector<GameObject> sceneObjects;
+
+	// Camera
+	Camera camera;
+
+    // Time
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER lastTime;
 };

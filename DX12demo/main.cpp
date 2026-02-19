@@ -56,6 +56,8 @@ int WINAPI WinMain(
 
     ShowWindow(hwnd, nCmdShow);
 
+    ShowCursor(FALSE);
+
 	Renderer renderer(hwnd, WindowWidth, WindowHeight);
 
     // Infinite loop for getting input to the window
