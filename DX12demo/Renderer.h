@@ -50,13 +50,25 @@ struct GameObject
 
 struct Camera
 {
-    XMFLOAT3 position = { 0.0f, 1.5f, -5.0f };
-
     float yaw = 0.0f;   // rotation around Y
     float pitch = 0.0f; // rotation around X
-
-    float moveSpeed = 5.0f;
     float mouseSensitivity = 0.002f;
+};
+
+struct Player
+{
+    XMFLOAT3 position = { 0.0f, 5.0f, 0.0f };
+    XMFLOAT3 velocity = { 0.0f, 0.0f, 0.0f };
+
+    float moveAcceleration = 50.0f;
+    float maxSpeed = 8.0f;
+    float jumpStrength = 8.0f;
+    float gravity = -20.0f;
+
+    float height = 1.0f;
+    float eyeOffset = 0.0f;
+
+    bool grounded = false;
 };
 
 class Renderer
@@ -144,4 +156,7 @@ private:
     // Time
     LARGE_INTEGER frequency;
     LARGE_INTEGER lastTime;
+
+    // Player
+    Player player;
 };

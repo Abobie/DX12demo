@@ -711,9 +711,10 @@ void Renderer::InitD3D(HWND hwnd)
         });
 
     // Random cubes
-    sceneObjects.push_back({ { 3,0,3 },{0,0,0},{1,2,1} });
-    sceneObjects.push_back({ { -4,0,2 },{0,0,0},{1,3,1} });
+    sceneObjects.push_back({ { 3,0.5f,3 },{0,0,0},{1,2,1} });
+    sceneObjects.push_back({ { -4,1.0f,2 },{0,0,0},{1,3,1} });
     sceneObjects.push_back({ { 0,0,-4 },{0,0,0},{2,1,2} });
+    sceneObjects[sceneObjects.size() - 1].moveSpeed = -0.5f;
 }
 
 void Renderer::Render()
@@ -740,75 +741,6 @@ void Renderer::Render()
 
     commandAllocators[frameIndex]->Reset();
     commandList->Reset(commandAllocators[frameIndex].Get(), pipelineState.Get());
-
-    // Compute cube movement
-    XMVECTOR camPos = XMLoadFloat3(&camera.position);
-
-    for (UINT i = 0; i < sceneObjects.size(); ++i)
-    {
-        // Skip floor and walls
-        // Assume first few objects are room pieces
-        if (i < 6) continue;
-
-        XMVECTOR objPos = XMLoadFloat3(&sceneObjects[i].position);
-
-        // Direction from cube to camera
-        XMVECTOR toCamera = camPos - objPos;
-
-        // Remove Y component (stay on ground)
-        toCamera = XMVectorSetY(toCamera, 0.0f);
-
-        float length = XMVectorGetX(XMVector3Length(toCamera));
-
-        if (length > 0.01f) // avoid jitter when very close
-        {
-            XMVECTOR direction = XMVector3Normalize(toCamera);
-
-            objPos += direction * sceneObjects[i].moveSpeed * deltaTime;
-
-            XMStoreFloat3(&sceneObjects[i].position, objPos);
-        }
-    }
-
-	// Cube collision resolution (simple AABB)
-    for (int i = 6; i < sceneObjects.size(); ++i)
-    {
-        for (int j = i + 1; j < sceneObjects.size(); ++j)
-        {
-            XMFLOAT3& posA = sceneObjects[i].position;
-            XMFLOAT3& posB = sceneObjects[j].position;
-
-            float halfA = sceneObjects[i].scale.x * 0.5f;
-            float halfB = sceneObjects[j].scale.x * 0.5f;
-
-            float dx = posB.x - posA.x;
-            float dz = posB.z - posA.z;
-
-            float overlapX = (halfA + halfB) - fabsf(dx);
-            float overlapZ = (halfA + halfB) - fabsf(dz);
-
-            if (overlapX > 0 && overlapZ > 0)
-            {
-                // Resolve along smallest axis
-                if (overlapX < overlapZ)
-                {
-                    float push = overlapX * 0.5f;
-                    float dir = (dx > 0) ? 1.0f : -1.0f;
-
-                    posA.x -= dir * push;
-                    posB.x += dir * push;
-                }
-                else
-                {
-                    float push = overlapZ * 0.5f;
-                    float dir = (dz > 0) ? 1.0f : -1.0f;
-
-                    posA.z -= dir * push;
-                    posB.z += dir * push;
-                }
-            }
-        }
-    }
 
     // Mouse input for rotating camera
     POINT mousePos;
@@ -861,32 +793,206 @@ void Renderer::Render()
 
     XMVECTOR up = XMVector3Cross(forward, right);
 
-    // WASD movement
-    XMVECTOR position = XMLoadFloat3(&camera.position);
+    // Player movement
+    XMVECTOR velocity = XMLoadFloat3(&player.velocity);
+    XMVECTOR position = XMLoadFloat3(&player.position);
 
-    if (GetAsyncKeyState('W') & 0x8000)
-        position += forward * camera.moveSpeed * deltaTime;
+    XMVECTOR forwardXZ = XMVectorSet(
+        XMVectorGetX(forward),
+        0.0f,
+        XMVectorGetZ(forward),
+        0.0f
+    );
 
-    if (GetAsyncKeyState('S') & 0x8000)
-        position -= forward * camera.moveSpeed * deltaTime;
+    forwardXZ = XMVector3Normalize(forwardXZ);
 
-    if (GetAsyncKeyState('D') & 0x8000)
-        position += right * camera.moveSpeed * deltaTime;
+    XMVECTOR rightXZ = XMVectorSet(
+        XMVectorGetX(right),
+        0.0f,
+        XMVectorGetZ(right),
+        0.0f
+    );
 
-    if (GetAsyncKeyState('A') & 0x8000)
-        position -= right * camera.moveSpeed * deltaTime;
+    rightXZ = XMVector3Normalize(rightXZ);
 
-    XMStoreFloat3(&camera.position, position);
+    XMVECTOR acceleration = XMVectorZero();
+
+    // WASD movement only when grounded
+    if (player.grounded)
+    {
+        if (GetAsyncKeyState('W') & 0x8000)
+            acceleration += forwardXZ;
+
+        if (GetAsyncKeyState('S') & 0x8000)
+            acceleration -= forwardXZ;
+
+        if (GetAsyncKeyState('D') & 0x8000)
+            acceleration += rightXZ;
+
+        if (GetAsyncKeyState('A') & 0x8000)
+            acceleration -= rightXZ;
+    }
+
+    if (XMVector3LengthSq(acceleration).m128_f32[0] > 0.0f)
+    {
+        acceleration = XMVector3Normalize(acceleration);
+        velocity += acceleration * player.moveAcceleration * deltaTime;
+    }
+
+    // Apply gravity
+    velocity += XMVectorSet(0.0f, player.gravity * deltaTime, 0.0f, 0.0f);
+
+    // Clamp horizontal velocity
+    XMVECTOR horizontalVel = XMVectorSet(
+        XMVectorGetX(velocity),
+        0.0f,
+        XMVectorGetZ(velocity),
+        0.0f
+    );
+
+    float speed = XMVectorGetX(XMVector3Length(horizontalVel));
+
+    if (speed > player.maxSpeed)
+    {
+        horizontalVel = XMVector3Normalize(horizontalVel) * player.maxSpeed;
+        velocity = XMVectorSet(
+            XMVectorGetX(horizontalVel),
+            XMVectorGetY(velocity),
+            XMVectorGetZ(horizontalVel),
+            0.0f
+        );
+    }
+
+	// Apply velocity to position
+    position += velocity * deltaTime;
+
+    // Ground collision
+    float groundHeight = -0.5f;
+
+    if (XMVectorGetY(position) <= groundHeight + player.height)
+    {
+        position = XMVectorSet(
+            XMVectorGetX(position),
+            groundHeight + player.height,
+            XMVectorGetZ(position),
+            0.0f
+        );
+
+        velocity = XMVectorSet(
+            XMVectorGetX(velocity),
+            0.0f,
+            XMVectorGetZ(velocity),
+            0.0f
+        );
+
+        player.grounded = true;
+    }
+    else
+    {
+        player.grounded = false;
+    }
+
+    // Jumping
+    if (player.grounded && (GetAsyncKeyState(VK_SPACE) & 0x8000))
+    {
+        velocity += XMVectorSet(0.0f, player.jumpStrength, 0.0f, 0.0f);
+        player.grounded = false;
+    }
+
+    // Ground friction
+    if (player.grounded)
+    {
+        float friction = 8.0f;
+
+        float frictionFactor = max(0.0f, 1.0f - friction * deltaTime);
+        horizontalVel *= frictionFactor;
+
+        velocity = XMVectorSet(
+            XMVectorGetX(horizontalVel),
+            XMVectorGetY(velocity),
+            XMVectorGetZ(horizontalVel),
+            0.0f
+        );
+    }
+
+    XMStoreFloat3(&player.position, position);
+    XMStoreFloat3(&player.velocity, velocity);
+
+    // Camera to follow player
+    XMVECTOR camPos = XMLoadFloat3(&player.position);
+    camPos += XMVectorSet(0.0f, player.eyeOffset, 0.0f, 0.0f);
 
     // Camera
     XMVECTOR camTarget = camPos + forward;
 
-    XMMATRIX view =
-        XMMatrixLookAtLH(
-            camPos,
-            camTarget,
-            up
-        );
+    XMMATRIX view = XMMatrixLookAtLH(camPos, camTarget, up);
+
+    // Compute cube movement
+    for (UINT i = 0; i < sceneObjects.size(); ++i)
+    {
+        // Skip floor and walls
+        // Assume first few objects are room pieces
+        if (i < 6) continue;
+
+        XMVECTOR objPos = XMLoadFloat3(&sceneObjects[i].position);
+
+        // Direction from cube to camera
+        XMVECTOR toCamera = camPos - objPos;
+
+        // Remove Y component (stay on ground)
+        toCamera = XMVectorSetY(toCamera, 0.0f);
+
+        float length = XMVectorGetX(XMVector3Length(toCamera));
+
+        if (length > 0.01f) // avoid jitter when very close
+        {
+            XMVECTOR direction = XMVector3Normalize(toCamera);
+
+            objPos += direction * sceneObjects[i].moveSpeed * deltaTime;
+
+            XMStoreFloat3(&sceneObjects[i].position, objPos);
+        }
+    }
+
+    // Cube collision resolution (simple AABB)
+    for (int i = 6; i < sceneObjects.size(); ++i)
+    {
+        for (int j = i + 1; j < sceneObjects.size(); ++j)
+        {
+            XMFLOAT3& posA = sceneObjects[i].position;
+            XMFLOAT3& posB = sceneObjects[j].position;
+
+            float halfA = sceneObjects[i].scale.x * 0.5f;
+            float halfB = sceneObjects[j].scale.x * 0.5f;
+
+            float dx = posB.x - posA.x;
+            float dz = posB.z - posA.z;
+
+            float overlapX = (halfA + halfB) - fabsf(dx);
+            float overlapZ = (halfA + halfB) - fabsf(dz);
+
+            if (overlapX > 0 && overlapZ > 0)
+            {
+                // Resolve along smallest axis
+                if (overlapX < overlapZ)
+                {
+                    float push = overlapX * 0.5f;
+                    float dir = (dx > 0) ? 1.0f : -1.0f;
+
+                    posA.x -= dir * push;
+                    posB.x += dir * push;
+                }
+                else
+                {
+                    float push = overlapZ * 0.5f;
+                    float dir = (dz > 0) ? 1.0f : -1.0f;
+
+                    posA.z -= dir * push;
+                    posB.z += dir * push;
+                }
+            }
+        }
+    }
 
     // Projection
     float aspect = (float)width / height;
@@ -904,7 +1010,7 @@ void Renderer::Render()
     cbData->directionalLightDir = { -0.5f, -1.0f, -0.3f };
     cbData->directionalLightColor = { 0.0f, 0.0f, 0.0f };
 
-    cbData->pointLightPosition = camera.position;
+    cbData->pointLightPosition = player.position;
     cbData->pointLightRange = 50.0f;
     cbData->pointLightColor = { 0.4f, 0.4f, 1.0f };
 
@@ -917,6 +1023,8 @@ void Renderer::Render()
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
     commandList->ResourceBarrier(1, &barrier);
+
+    renderTargetStates[frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
 	// Clear render target
     D3D12_CPU_DESCRIPTOR_HANDLE rtv =
