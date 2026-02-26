@@ -65,6 +65,8 @@ struct Player
     float jumpStrength = 8.0f;
     float gravity = -20.0f;
 
+    float width = 0.5f;
+    float depth = 0.5f;
     float height = 1.0f;
     float eyeOffset = 0.0f;
 
@@ -81,6 +83,7 @@ public:
     void Render();
 
 private:
+    void ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, GameObject& obj, UINT axis);
     void InitD3D(HWND hwnd);
 
 private:

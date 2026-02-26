@@ -152,6 +152,60 @@ void LoadTextureFromFile(
     cmd->ResourceBarrier(1, &barrier);
 }
 
+// AABB collision resolution between player and object on a specific axis (0 = X, 1 = Y, 2 = Z)
+void Renderer::ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, GameObject& obj, UINT axis)
+{
+    XMFLOAT3 p;
+    XMFLOAT3 v;
+    XMStoreFloat3(&p, position);
+    XMStoreFloat3(&v, velocity);
+
+    float playerHalfX = player.width * 0.5f;
+    float playerHalfY = player.height * 0.5f;
+    float playerHalfZ = player.depth * 0.5f;
+
+    float objHalfX = obj.scale.x * 0.5f;
+    float objHalfY = obj.scale.y * 0.5f;
+    float objHalfZ = obj.scale.z * 0.5f;
+
+    float dx = obj.position.x - p.x;
+    float dy = obj.position.y - p.y;
+    float dz = obj.position.z - p.z;
+
+    float overlapX = (playerHalfX + objHalfX) - fabsf(dx);
+    float overlapY = (playerHalfY + objHalfY) - fabsf(dy);
+    float overlapZ = (playerHalfZ + objHalfZ) - fabsf(dz);
+
+	// If there's an overlap on all axes, resolve it along the specified axis.
+    if (overlapX > 0 && overlapY > 0 && overlapZ > 0)
+    {
+        if (axis == 0) // X
+        {
+            float dir = (dx > 0) ? 1.0f : -1.0f;
+            p.x -= dir * overlapX;
+            v.x = 0.0f;
+        }
+        else if (axis == 1) // Y
+        {
+            float dir = (dy > 0) ? 1.0f : -1.0f;
+            p.y -= dir * overlapY;
+            v.y = 0.0f;
+
+            // If colliding from above -> grounded
+            if (dir < 0)
+                player.grounded = true;
+        }
+        else if (axis == 2) // Z
+        {
+            float dir = (dz > 0) ? 1.0f : -1.0f;
+            p.z -= dir * overlapZ;
+            v.z = 0.0f;
+        }
+    }
+	position = XMLoadFloat3(&p);
+	velocity = XMLoadFloat3(&v);
+}
+
 void Renderer::InitD3D(HWND hwnd)
 {
     // DX12 initialization. First, create DXGI Factory
@@ -699,15 +753,15 @@ void Renderer::InitD3D(HWND hwnd)
     // Left wall
     sceneObjects.push_back({
         { -10.0f, 3.5f, 0.0f },
-        { 0.0f, XM_PIDIV2, 0.0f },
-        { 20.0f, 8.0f, 1.0f }
+        { 0.0f, 0.0f, 0.0f },
+        { 1.0f, 8.0f, 20.0f }
         });
 
     // Right wall
     sceneObjects.push_back({
         { 10.0f, 3.5f, 0.0f },
-        { 0.0f, XM_PIDIV2, 0.0f },
-        { 20.0f, 8.0f, 1.0f }
+        { 0.0f, 0.0f, 0.0f },
+        { 1.0f, 8.0f, 20.0f }
         });
 
     // Random cubes
@@ -864,32 +918,27 @@ void Renderer::Render()
     }
 
 	// Apply velocity to position
-    position += velocity * deltaTime;
 
-    // Ground collision
-    float groundHeight = -0.5f;
-
-    if (XMVectorGetY(position) <= groundHeight + player.height)
+    // X axis
+	position += XMVectorMultiply(velocity, XMVectorSet(deltaTime, 0.0f, 0.0f, 0.0f));
+    for (auto& obj : sceneObjects)
     {
-        position = XMVectorSet(
-            XMVectorGetX(position),
-            groundHeight + player.height,
-            XMVectorGetZ(position),
-            0.0f
-        );
-
-        velocity = XMVectorSet(
-            XMVectorGetX(velocity),
-            0.0f,
-            XMVectorGetZ(velocity),
-            0.0f
-        );
-
-        player.grounded = true;
+        ResolvePlayerCollision(position, velocity, obj, 0);
     }
-    else
+
+    // Z axis
+    position += XMVectorMultiply(velocity, XMVectorSet(0.0f, 0.0f, deltaTime, 0.0f));
+    for (auto& obj : sceneObjects)
     {
-        player.grounded = false;
+        ResolvePlayerCollision(position, velocity, obj, 2);
+    }
+
+    // Y axis
+    player.grounded = false; // reset before Y resolution
+    position += XMVectorMultiply(velocity, XMVectorSet(0.0f, deltaTime, 0.0f, 0.0f));
+    for (auto& obj : sceneObjects)
+    {
+        ResolvePlayerCollision(position, velocity, obj, 1);
     }
 
     // Jumping
@@ -954,7 +1003,7 @@ void Renderer::Render()
         }
     }
 
-    // Cube collision resolution (simple AABB)
+    // Cube-cube collision resolution (simple AABB)
     for (int i = 6; i < sceneObjects.size(); ++i)
     {
         for (int j = i + 1; j < sceneObjects.size(); ++j)
@@ -989,6 +1038,42 @@ void Renderer::Render()
 
                     posA.z -= dir * push;
                     posB.z += dir * push;
+                }
+            }
+        }
+    }
+
+    // Cube-wall collision resolution (AABB)
+    for (int i = 6; i < sceneObjects.size(); ++i)
+    {
+        for (int j = 2; j < 6; ++j)
+        {
+            XMFLOAT3& posCube = sceneObjects[i].position;
+            XMFLOAT3& posWall = sceneObjects[j].position;
+
+            float halfCubeX = sceneObjects[i].scale.x * 0.5f;
+            float halfWallX = sceneObjects[j].scale.x * 0.5f;
+            float halfCubeZ = sceneObjects[i].scale.z * 0.5f;
+            float halfWallZ = sceneObjects[j].scale.z * 0.5f;
+
+            float dx = posWall.x - posCube.x;
+            float dz = posWall.z - posCube.z;
+
+            float overlapX = (halfCubeX + halfWallX) - fabsf(dx);
+            float overlapZ = (halfCubeZ + halfWallZ) - fabsf(dz);
+
+            if (overlapX > 0 && overlapZ > 0)
+            {
+                // Resolve along smallest axis
+                if (overlapX < overlapZ)
+                {
+                    float dir = (dx > 0) ? 1.0f : -1.0f;
+                    posCube.x -= dir * overlapX;
+                }
+                else
+                {
+                    float dir = (dz > 0) ? 1.0f : -1.0f;
+                    posCube.z -= dir * overlapZ;
                 }
             }
         }
