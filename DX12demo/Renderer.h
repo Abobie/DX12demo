@@ -65,9 +65,8 @@ struct Player
     float jumpStrength = 8.0f;
     float gravity = -20.0f;
 
-    float width = 0.5f;
-    float depth = 0.5f;
-    float height = 1.0f;
+    float radius = 0.5f;
+    float halfHeight = 0.25f;
     float eyeOffset = 0.0f;
 
     bool grounded = false;
@@ -83,7 +82,7 @@ public:
     void Render();
 
 private:
-    void ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, GameObject& obj, UINT axis);
+    void ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, const GameObject& box);
     void InitD3D(HWND hwnd);
 
 private:

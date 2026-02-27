@@ -152,58 +152,74 @@ void LoadTextureFromFile(
     cmd->ResourceBarrier(1, &barrier);
 }
 
-// AABB collision resolution between player and object on a specific axis (0 = X, 1 = Y, 2 = Z)
-void Renderer::ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, GameObject& obj, UINT axis)
+// Resolve collision between player (capsule) and box objects (including floor and walls)
+void Renderer::ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, const GameObject& box)
 {
-    XMFLOAT3 p;
-    XMFLOAT3 v;
-    XMStoreFloat3(&p, position);
-    XMStoreFloat3(&v, velocity);
+    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 
-    float playerHalfX = player.width * 0.5f;
-    float playerHalfY = player.height * 0.5f;
-    float playerHalfZ = player.depth * 0.5f;
+    float radius = player.radius;
+    float halfHeight = player.halfHeight;
 
-    float objHalfX = obj.scale.x * 0.5f;
-    float objHalfY = obj.scale.y * 0.5f;
-    float objHalfZ = obj.scale.z * 0.5f;
+    XMVECTOR bottom = position - up * halfHeight;
+    XMVECTOR top = position + up * halfHeight;
 
-    float dx = obj.position.x - p.x;
-    float dy = obj.position.y - p.y;
-    float dz = obj.position.z - p.z;
+    // Box min/max
+    XMVECTOR boxMin = XMVectorSet(
+        box.position.x - box.scale.x * 0.5f,
+        box.position.y - box.scale.y * 0.5f,
+        box.position.z - box.scale.z * 0.5f,
+        0.0f
+    );
 
-    float overlapX = (playerHalfX + objHalfX) - fabsf(dx);
-    float overlapY = (playerHalfY + objHalfY) - fabsf(dy);
-    float overlapZ = (playerHalfZ + objHalfZ) - fabsf(dz);
+    XMVECTOR boxMax = XMVectorSet(
+        box.position.x + box.scale.x * 0.5f,
+        box.position.y + box.scale.y * 0.5f,
+        box.position.z + box.scale.z * 0.5f,
+        0.0f
+    );
 
-	// If there's an overlap on all axes, resolve it along the specified axis.
-    if (overlapX > 0 && overlapY > 0 && overlapZ > 0)
+    // Closest point on box to capsule center
+    XMVECTOR boxClosest = XMVectorClamp(position, boxMin, boxMax);
+
+    // Clamp Y to capsule segment
+    float y = XMVectorGetY(boxClosest);
+    float capsuleMinY = XMVectorGetY(bottom);
+    float capsuleMaxY = XMVectorGetY(top);
+
+    y = max(capsuleMinY, min(y, capsuleMaxY));
+
+    XMVECTOR capsuleClosest = XMVectorSetY(position, y);
+
+    // Vector from capsule to box
+    XMVECTOR delta = boxClosest - capsuleClosest;
+
+    float dist = XMVectorGetX(XMVector3Length(delta));
+
+    if (dist < radius)
     {
-        if (axis == 0) // X
-        {
-            float dir = (dx > 0) ? 1.0f : -1.0f;
-            p.x -= dir * overlapX;
-            v.x = 0.0f;
-        }
-        else if (axis == 1) // Y
-        {
-            float dir = (dy > 0) ? 1.0f : -1.0f;
-            p.y -= dir * overlapY;
-            v.y = 0.0f;
+        XMVECTOR normal;
 
-            // If colliding from above -> grounded
-            if (dir < 0)
-                player.grounded = true;
-        }
-        else if (axis == 2) // Z
-        {
-            float dir = (dz > 0) ? 1.0f : -1.0f;
-            p.z -= dir * overlapZ;
-            v.z = 0.0f;
-        }
+        if (dist > 0.0001f)
+            normal = delta / dist;
+        else
+            normal = XMVectorSet(0, 1, 0, 0); // fallback
+
+        float penetration = radius - dist;
+
+        // Push capsule out
+        position -= normal * penetration;
+
+        // Remove velocity into surface
+        float velIntoSurface =
+            XMVectorGetX(XMVector3Dot(velocity, normal));
+
+        if (velIntoSurface > 0.0f)
+            velocity -= normal * velIntoSurface;
+
+        // Ground check
+        if (XMVectorGetY(normal) < -0.5f)
+            player.grounded = true;
     }
-	position = XMLoadFloat3(&p);
-	velocity = XMLoadFloat3(&v);
 }
 
 void Renderer::InitD3D(HWND hwnd)
@@ -783,15 +799,15 @@ void Renderer::Render()
 
     lastTime = currentTime;
 
-	// Swap chain frame index
+    // Swap chain frame index
     UINT frameIndex = swapChain->GetCurrentBackBufferIndex();
 
-	// Fence wait
+    // Fence wait
     if (fence->GetCompletedValue() < fenceValues[frameIndex])
     {
         fence->SetEventOnCompletion(fenceValues[frameIndex], fenceEvent);
         WaitForSingleObject(fenceEvent, INFINITE);
-	}
+    }
 
     commandAllocators[frameIndex]->Reset();
     commandList->Reset(commandAllocators[frameIndex].Get(), pipelineState.Get());
@@ -917,28 +933,12 @@ void Renderer::Render()
         );
     }
 
-	// Apply velocity to position
-
-    // X axis
-	position += XMVectorMultiply(velocity, XMVectorSet(deltaTime, 0.0f, 0.0f, 0.0f));
+    // Apply velocity to position
+    position += velocity * deltaTime;
+    player.grounded = false;
     for (auto& obj : sceneObjects)
     {
-        ResolvePlayerCollision(position, velocity, obj, 0);
-    }
-
-    // Z axis
-    position += XMVectorMultiply(velocity, XMVectorSet(0.0f, 0.0f, deltaTime, 0.0f));
-    for (auto& obj : sceneObjects)
-    {
-        ResolvePlayerCollision(position, velocity, obj, 2);
-    }
-
-    // Y axis
-    player.grounded = false; // reset before Y resolution
-    position += XMVectorMultiply(velocity, XMVectorSet(0.0f, deltaTime, 0.0f, 0.0f));
-    for (auto& obj : sceneObjects)
-    {
-        ResolvePlayerCollision(position, velocity, obj, 1);
+        ResolvePlayerCollision(position, velocity, obj);
     }
 
     // Jumping
