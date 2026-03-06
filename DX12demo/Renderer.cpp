@@ -152,6 +152,54 @@ void LoadTextureFromFile(
     cmd->ResourceBarrier(1, &barrier);
 }
 
+// Doesn't look great, but might be useful for debugging
+void Renderer::DrawHookMarker(XMMATRIX& view, XMMATRIX& proj)
+{
+    GameObject hookMarker;
+
+    hookMarker.position = player.hookPoint;
+    hookMarker.scale = { 0.1f, 0.1f, 0.1f };
+    hookMarker.rotation = { 0,0,0 };
+
+    size_t index = sceneObjects.size();
+    
+    const auto& obj = hookMarker;
+
+    XMMATRIX scale = XMMatrixScaling(obj.scale.x, obj.scale.y, obj.scale.z);
+    XMMATRIX rot = XMMatrixRotationRollPitchYaw(
+        obj.rotation.x,
+        obj.rotation.y,
+        obj.rotation.z);
+
+    XMMATRIX trans = XMMatrixTranslation(
+        obj.position.x,
+        obj.position.y,
+        obj.position.z);
+
+    XMMATRIX world = scale * rot * trans;
+
+    MVPConstants* objCB =
+        (MVPConstants*)((uint8_t*)cbData + index * cbStride);
+
+    XMStoreFloat4x4(&objCB->world, XMMatrixTranspose(world));
+    XMStoreFloat4x4(&objCB->view, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&objCB->projection, XMMatrixTranspose(proj));
+
+    objCB->ambientColor = { 0.0f, 0.0f, 0.0f };
+    objCB->directionalLightDir = cbData->directionalLightDir;
+    objCB->directionalLightColor = { 0.0f, 0.0f, 0.0f };
+    objCB->pointLightPosition = cbData->pointLightPosition;
+    objCB->pointLightRange = cbData->pointLightRange;
+    objCB->pointLightColor = { 0.0f, 0.0f, 0.0f };
+
+    D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
+        constantBuffer->GetGPUVirtualAddress() + index * cbStride;
+
+    commandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+
+    commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+}
+
 // Resolve collision between player (capsule) and box objects (including floor and walls)
 void Renderer::ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, const GameObject& box)
 {
@@ -219,6 +267,104 @@ void Renderer::ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, co
         // Ground check
         if (XMVectorGetY(normal) < -0.5f)
             player.grounded = true;
+    }
+}
+
+bool Renderer::RayAABB(
+    const XMVECTOR& origin,
+    const XMVECTOR& dir,
+    const XMVECTOR& boxMin,
+    const XMVECTOR& boxMax,
+    float& outT)
+{
+    float tMin = 0.0f;
+    float tMax = 1000.0f; // max rope length
+
+    // Check overlap for each axis
+    for (int i = 0; i < 3; i++)
+    {
+        float o = XMVectorGetByIndex(origin, i);
+        float d = XMVectorGetByIndex(dir, i);
+        float minB = XMVectorGetByIndex(boxMin, i);
+        float maxB = XMVectorGetByIndex(boxMax, i);
+
+        // Shortcut if ray is parallel to this axis
+        if (fabs(d) < 0.0001f)
+        {
+            if (o < minB || o > maxB)
+                return false;
+        }
+        else
+        {
+            // Check where ray intersects with the slab
+            float t1 = (minB - o) / d;
+            float t2 = (maxB - o) / d;
+
+            if (t1 > t2)
+                std::swap(t1, t2);
+
+            // Store entry and exit points
+            tMin = max(tMin, t1);
+            tMax = min(tMax, t2);
+
+            if (tMin > tMax)
+                return false;
+        }
+    }
+
+    outT = tMin;
+    return true;
+}
+
+void Renderer::fireHookshot()
+{
+    XMVECTOR dir = XMVectorSet(
+        cosf(camera.pitch) * sinf(camera.yaw),
+        sinf(camera.pitch),
+        cosf(camera.pitch) * cosf(camera.yaw),
+        0.0f
+    );
+
+    dir = XMVector3Normalize(dir);
+
+    XMVECTOR origin = XMLoadFloat3(&player.position);
+
+    // Hookshot ray casting
+    float closestT = FLT_MAX;
+    bool hit = false;
+    float t;
+
+    XMVECTOR bestHitPoint = XMVectorZero();
+
+    for (auto& obj : sceneObjects)
+    {
+        XMVECTOR boxMin = XMVectorSet(
+            obj.position.x - obj.scale.x * 0.5f,
+            obj.position.y - obj.scale.y * 0.5f,
+            obj.position.z - obj.scale.z * 0.5f,
+            0.0f);
+        XMVECTOR boxMax = XMVectorSet(
+            obj.position.x + obj.scale.x * 0.5f,
+            obj.position.y + obj.scale.y * 0.5f,
+            obj.position.z + obj.scale.z * 0.5f,
+            0.0f);
+        if (RayAABB(origin, dir, boxMin, boxMax, t))
+        {
+            if (t < closestT)
+            {
+                closestT = t;
+                bestHitPoint = origin + dir * t;
+                hit = true;
+            }
+        }
+    }
+
+    if (hit)
+    {
+        XMStoreFloat3(&player.hookPoint, bestHitPoint);
+        player.hookActive = true;
+
+        player.ropeLength = XMVectorGetX(XMVector3Length(bestHitPoint - origin));
     }
 }
 
@@ -903,6 +1049,9 @@ void Renderer::Render()
             acceleration -= rightXZ;
     }
 
+    // Hookshot
+    bool qPressed = (GetAsyncKeyState('Q') & 0x8000);
+
     if (XMVector3LengthSq(acceleration).m128_f32[0] > 0.0f)
     {
         acceleration = XMVector3Normalize(acceleration);
@@ -911,6 +1060,17 @@ void Renderer::Render()
 
     // Apply gravity
     velocity += XMVectorSet(0.0f, player.gravity * deltaTime, 0.0f, 0.0f);
+
+    // Fire hookshot
+    if (qPressed && !player.hookActive)
+    {
+        fireHookshot();
+    }
+
+    if (!qPressed)
+    {
+        player.hookActive = false;
+    }
 
     // Clamp horizontal velocity
     XMVECTOR horizontalVel = XMVectorSet(
@@ -922,7 +1082,7 @@ void Renderer::Render()
 
     float speed = XMVectorGetX(XMVector3Length(horizontalVel));
 
-    if (speed > player.maxSpeed)
+    if (player.grounded && speed > player.maxSpeed)
     {
         horizontalVel = XMVector3Normalize(horizontalVel) * player.maxSpeed;
         velocity = XMVectorSet(
@@ -935,6 +1095,33 @@ void Renderer::Render()
 
     // Apply velocity to position
     position += velocity * deltaTime;
+
+    // Hookshot logic
+    if (player.hookActive)
+    {
+        XMVECTOR hookPos = XMLoadFloat3(&player.hookPoint);
+
+        // Pull force
+        XMVECTOR toPlayer = position - hookPos;
+        XMVECTOR dir = XMVector3Normalize(-toPlayer);
+        velocity += dir * player.hookshotForce * deltaTime;
+
+        // Rope constraint
+        float dist = XMVectorGetX(XMVector3Length(toPlayer));
+
+        if (dist > player.ropeLength)
+        {
+            XMVECTOR normal = XMVector3Normalize(toPlayer);
+
+            position = hookPos + normal * player.ropeLength;
+
+            float vDot = XMVectorGetX(XMVector3Dot(velocity, normal));
+            if (vDot > 0.0f)
+                velocity -= normal * vDot;
+        }
+    }
+
+    // Resolve collisions
     player.grounded = false;
     for (auto& obj : sceneObjects)
     {
@@ -1196,6 +1383,11 @@ void Renderer::Render()
         );
 
         commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+    }
+
+    if (player.hookActive)
+    {
+        DrawHookMarker(view, proj);
     }
 
     // Transition: RENDER_TARGET -> PRESENT

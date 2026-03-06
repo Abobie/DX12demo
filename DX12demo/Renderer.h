@@ -70,6 +70,12 @@ struct Player
     float eyeOffset = 0.0f;
 
     bool grounded = false;
+
+    // Hookshot mechanic
+    bool hookActive;
+    XMFLOAT3 hookPoint;
+    float ropeLength;
+    float hookshotForce = 30.0f;
 };
 
 class Renderer
@@ -82,7 +88,16 @@ public:
     void Render();
 
 private:
+//    void DrawCrosshair();
+    void DrawHookMarker(XMMATRIX& view, XMMATRIX& proj);
     void ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, const GameObject& box);
+    bool RayAABB(
+        const XMVECTOR& origin,
+        const XMVECTOR& dir,
+        const XMVECTOR& boxMin,
+        const XMVECTOR& boxMax,
+        float& t);
+    void fireHookshot();
     void InitD3D(HWND hwnd);
 
 private:
