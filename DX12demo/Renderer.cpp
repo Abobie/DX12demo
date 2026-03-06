@@ -152,6 +152,53 @@ void LoadTextureFromFile(
     cmd->ResourceBarrier(1, &barrier);
 }
 
+void Renderer::DrawCrosshair(XMMATRIX& view, XMMATRIX& proj, XMVECTOR camPos, XMVECTOR forward)
+{
+    GameObject crosshair;
+
+    // Place slightly in front of the camera
+    XMVECTOR pos = camPos + forward * 1.0f;
+
+    XMStoreFloat3(&crosshair.position, pos);
+
+    crosshair.scale = { 0.007f, 0.007f, 0.007f };
+    crosshair.rotation = { 0,0,0 };
+
+    size_t index = sceneObjects.size() + 1;
+
+    const auto& obj = crosshair;
+
+    XMMATRIX scale = XMMatrixScaling(obj.scale.x, obj.scale.y, obj.scale.z);
+
+    XMMATRIX rot =
+        XMMatrixRotationRollPitchYaw(
+            obj.rotation.x,
+            obj.rotation.y,
+            obj.rotation.z);
+
+    XMMATRIX trans =
+        XMMatrixTranslation(
+            obj.position.x,
+            obj.position.y,
+            obj.position.z);
+
+    XMMATRIX world = scale * rot * trans;
+
+    MVPConstants* objCB =
+        (MVPConstants*)((uint8_t*)cbData + index * cbStride);
+
+    XMStoreFloat4x4(&objCB->world, XMMatrixTranspose(world));
+    XMStoreFloat4x4(&objCB->view, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&objCB->projection, XMMatrixTranspose(proj));
+
+    D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
+        constantBuffer->GetGPUVirtualAddress() + index * cbStride;
+
+    commandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+
+    commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+}
+
 // Doesn't look great, but might be useful for debugging
 void Renderer::DrawHookMarker(XMMATRIX& view, XMMATRIX& proj)
 {
@@ -184,13 +231,6 @@ void Renderer::DrawHookMarker(XMMATRIX& view, XMMATRIX& proj)
     XMStoreFloat4x4(&objCB->world, XMMatrixTranspose(world));
     XMStoreFloat4x4(&objCB->view, XMMatrixTranspose(view));
     XMStoreFloat4x4(&objCB->projection, XMMatrixTranspose(proj));
-
-    objCB->ambientColor = { 0.0f, 0.0f, 0.0f };
-    objCB->directionalLightDir = cbData->directionalLightDir;
-    objCB->directionalLightColor = { 0.0f, 0.0f, 0.0f };
-    objCB->pointLightPosition = cbData->pointLightPosition;
-    objCB->pointLightRange = cbData->pointLightRange;
-    objCB->pointLightColor = { 0.0f, 0.0f, 0.0f };
 
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
         constantBuffer->GetGPUVirtualAddress() + index * cbStride;
@@ -1384,6 +1424,8 @@ void Renderer::Render()
 
         commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
     }
+
+    DrawCrosshair(view, proj, camPos, forward);
 
     if (player.hookActive)
     {

@@ -88,7 +88,7 @@ public:
     void Render();
 
 private:
-//    void DrawCrosshair();
+    void DrawCrosshair(XMMATRIX& view, XMMATRIX& proj, XMVECTOR camPos, XMVECTOR forward);
     void DrawHookMarker(XMMATRIX& view, XMMATRIX& proj);
     void ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, const GameObject& box);
     bool RayAABB(
