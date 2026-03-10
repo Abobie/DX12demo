@@ -240,6 +240,85 @@ void Renderer::DrawHookMarker(XMMATRIX& view, XMMATRIX& proj)
     commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
 }
 
+void Renderer::DrawRope(XMMATRIX& view, XMMATRIX& proj)
+{
+    if (!player.hookActive)
+        return;
+
+    XMVECTOR camPos = XMLoadFloat3(&player.position);
+
+    XMVECTOR forward =
+        XMVectorSet(
+            cosf(camera.pitch) * sinf(camera.yaw),
+            sinf(camera.pitch),
+            cosf(camera.pitch) * cosf(camera.yaw),
+            0.0f
+        );
+
+    XMVECTOR right =
+        XMVector3Normalize(
+            XMVector3Cross(
+                XMVectorSet(0, 1, 0, 0),
+                forward
+            )
+        );
+
+    XMVECTOR up = XMVector3Cross(forward, right);
+
+    // Offset start position
+    XMVECTOR p0 = camPos + forward * 1.0f;// -up * 0.1f; //+ right * 0.25f - up * 0.2f;
+
+    //XMVECTOR p0 = XMLoadFloat3(&player.position);
+    XMVECTOR p1 = XMLoadFloat3(&player.hookPoint);
+
+    XMVECTOR diff = p1 - p0;
+
+    float length = XMVectorGetX(XMVector3Length(diff));
+
+    if (length < 0.001f)
+        return;
+
+    XMVECTOR dir = XMVector3Normalize(diff);
+
+    // Midpoint
+    XMVECTOR mid = (p0 + p1) * 0.5f;
+
+    // Build rotation so cube Z axis points along rope
+    up = XMVectorSet(0, 1, 0, 0);
+
+    right = XMVector3Normalize(XMVector3Cross(up, dir));
+    XMVECTOR newUp = XMVector3Cross(dir, right);
+
+    XMMATRIX rot =
+    {
+        XMVectorGetX(right), XMVectorGetY(right), XMVectorGetZ(right), 0,
+        XMVectorGetX(newUp), XMVectorGetY(newUp), XMVectorGetZ(newUp), 0,
+        XMVectorGetX(dir),   XMVectorGetY(dir),   XMVectorGetZ(dir),   0,
+        0,0,0,1
+    };
+
+    XMMATRIX scale = XMMatrixScaling(0.01f, 0.01f, length);
+    XMMATRIX trans = XMMatrixTranslationFromVector(mid);
+
+    XMMATRIX world = scale * rot * trans;
+
+    size_t index = sceneObjects.size() + 2;
+
+    MVPConstants* objCB =
+        (MVPConstants*)((uint8_t*)cbData + index * cbStride);
+
+    XMStoreFloat4x4(&objCB->world, XMMatrixTranspose(world));
+    XMStoreFloat4x4(&objCB->view, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&objCB->projection, XMMatrixTranspose(proj));
+
+    D3D12_GPU_VIRTUAL_ADDRESS cbAddress =
+        constantBuffer->GetGPUVirtualAddress() + index * cbStride;
+
+    commandList->SetGraphicsRootConstantBufferView(0, cbAddress);
+
+    commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+}
+
 // Resolve collision between player (capsule) and box objects (including floor and walls)
 void Renderer::ResolvePlayerCollision(XMVECTOR& position, XMVECTOR& velocity, const GameObject& box)
 {
@@ -1317,14 +1396,14 @@ void Renderer::Render()
             100.0f);
 
 	// Set light color and direction
-    cbData->ambientColor = { 0.15f, 0.15f, 0.18f };
+    cbData->ambientColor = { 0.15f, 0.15f, 0.38f };
 
     cbData->directionalLightDir = { -0.5f, -1.0f, -0.3f };
     cbData->directionalLightColor = { 0.0f, 0.0f, 0.0f };
 
     cbData->pointLightPosition = player.position;
     cbData->pointLightRange = 50.0f;
-    cbData->pointLightColor = { 0.4f, 0.4f, 1.0f };
+    cbData->pointLightColor = { 1.0f, 1.0f, 0.6f };
 
     // Transition: PRESENT -> RENDER_TARGET
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -1425,11 +1504,14 @@ void Renderer::Render()
         commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
     }
 
-    DrawCrosshair(view, proj, camPos, forward);
-
     if (player.hookActive)
     {
         DrawHookMarker(view, proj);
+        DrawRope(view, proj);
+    }
+    else
+    {
+        DrawCrosshair(view, proj, camPos, forward);
     }
 
     // Transition: RENDER_TARGET -> PRESENT
