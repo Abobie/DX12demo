@@ -89,42 +89,5 @@ void AudioSystem::GenerateSamples(float* buffer, int count)
         }
 
         buffer[i] = sample;
-
-        /*float ksSample = 0.0f;
-
-        if (stringActive && !ksBuffer.empty())
-        {
-            int next = (ksIndex + 1) % ksBuffer.size();
-
-            ksSample = ksBuffer[ksIndex];
-
-            float damping = 0.996f;
-
-            ksBuffer[ksIndex] = damping * 0.5f * (ksBuffer[ksIndex] + ksBuffer[next]);
-
-            ksIndex = next;
-        }
-
-        buffer[i] = ksSample * 0.3f;*/
     }
-}
-
-void AudioSystem::PluckString(float ropeLength)
-{
-    if (ropeLength <= 0.0f)
-        return;
-
-    float freq = 60.0f + 600.0f / ropeLength;
-
-    int size = max(2, (int)(sampleRate / freq));
-
-    ksBuffer.resize(size);
-
-    for (int i = 0; i < size; i++)
-    {
-        ksBuffer[i] = ((rand() / (float)RAND_MAX) * 2.0f - 1.0f);
-    }
-
-    ksIndex = 0;
-    stringActive = true;
 }

@@ -5,7 +5,6 @@
 
 struct AudioParameters
 {
-    float ropeLength = 0.0f;
     float playerVelocity = 0.0f;
 };
 
@@ -18,10 +17,7 @@ public:
 
     void Update();
 
-    void SetRopeLength(float length) { parameters.ropeLength = length; }
     void SetPlayerVelocity(float velocity) { parameters.playerVelocity = velocity; }
-
-    void PluckString(float freq);
 
 private:
 
@@ -41,12 +37,6 @@ private:
     AudioParameters parameters;
 
     void GenerateSamples(float* buffer, int count);
-
-    // Karplus-Strong
-    std::vector<float> ksBuffer;
-    int ksIndex = 0;
-
-    bool stringActive = false;
 
     // Melody
     //float NoteFreq(int semitoneFromA4) { return 440.0f * powf(2.0f, semitoneFromA4 / 12.0f); }

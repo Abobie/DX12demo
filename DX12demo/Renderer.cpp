@@ -316,9 +316,6 @@ void Renderer::DrawRope(XMMATRIX& view, XMMATRIX& proj)
     commandList->SetGraphicsRootConstantBufferView(0, cbAddress);
 
     commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
-
-    // Send rope length to audio system for sound effect
-    audio.SetRopeLength(length);
 }
 
 // Resolve collision between player (capsule) and box objects (including floor and walls)
@@ -1188,13 +1185,11 @@ void Renderer::Render()
     if (qPressed && !player.hookActive)
     {
         fireHookshot();
-        audio.PluckString(player.ropeLength);
     }
 
     if (!qPressed)
     {
         player.hookActive = false;
-        audio.SetRopeLength(0.0f);
     }
 
     // Clamp horizontal velocity
