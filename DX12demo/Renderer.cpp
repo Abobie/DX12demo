@@ -265,10 +265,8 @@ void Renderer::DrawRope(XMMATRIX& view, XMMATRIX& proj)
 
     XMVECTOR up = XMVector3Cross(forward, right);
 
-    // Offset start position
-    XMVECTOR p0 = camPos + forward * 1.0f;// -up * 0.1f; //+ right * 0.25f - up * 0.2f;
-
-    //XMVECTOR p0 = XMLoadFloat3(&player.position);
+    // Offset start position for better visibility
+    XMVECTOR p0 = camPos + forward * 1.0f;
     XMVECTOR p1 = XMLoadFloat3(&player.hookPoint);
 
     XMVECTOR diff = p1 - p0;
@@ -289,6 +287,7 @@ void Renderer::DrawRope(XMMATRIX& view, XMMATRIX& proj)
     right = XMVector3Normalize(XMVector3Cross(up, dir));
     XMVECTOR newUp = XMVector3Cross(dir, right);
 
+    // Set MVP matrices and draw a stretched cube as rope
     XMMATRIX rot =
     {
         XMVectorGetX(right), XMVectorGetY(right), XMVectorGetZ(right), 0,
@@ -317,6 +316,9 @@ void Renderer::DrawRope(XMMATRIX& view, XMMATRIX& proj)
     commandList->SetGraphicsRootConstantBufferView(0, cbAddress);
 
     commandList->DrawIndexedInstanced(36, 1, 0, 0, 0);
+
+    // Send rope length to audio system for sound effect
+    audio.SetRopeLength(length);
 }
 
 // Resolve collision between player (capsule) and box objects (including floor and walls)
@@ -1054,6 +1056,8 @@ void Renderer::InitD3D(HWND hwnd)
 
 void Renderer::Render()
 {
+    audio.Update();
+
     // Time
     LARGE_INTEGER currentTime;
     QueryPerformanceCounter(&currentTime);
@@ -1184,11 +1188,13 @@ void Renderer::Render()
     if (qPressed && !player.hookActive)
     {
         fireHookshot();
+        audio.PluckString(player.ropeLength);
     }
 
     if (!qPressed)
     {
         player.hookActive = false;
+        audio.SetRopeLength(0.0f);
     }
 
     // Clamp horizontal velocity
@@ -1272,6 +1278,12 @@ void Renderer::Render()
 
     XMStoreFloat3(&player.position, position);
     XMStoreFloat3(&player.velocity, velocity);
+
+    // Send final velocity to audio system
+    if (player.hookActive)
+        audio.SetPlayerVelocity(XMVectorGetX(XMVector3Length(velocity)));
+    else
+        audio.SetPlayerVelocity(0.0f);
 
     // Camera to follow player
     XMVECTOR camPos = XMLoadFloat3(&player.position);

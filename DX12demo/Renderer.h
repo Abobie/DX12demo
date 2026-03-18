@@ -7,6 +7,8 @@
 #include <DirectXMath.h>
 #include <vector>
 
+#include "AudioSystem.h"
+
 using namespace DirectX;
 
 using Microsoft::WRL::ComPtr;
@@ -177,4 +179,7 @@ private:
 
     // Player
     Player player;
+
+    // Audio
+    AudioSystem audio;
 };
