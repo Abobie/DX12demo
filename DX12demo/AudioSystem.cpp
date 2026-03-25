@@ -107,6 +107,32 @@ void AudioSystem::GenerateSamples(float* buffer, int count)
 
         musicSample *= env;
 
+        // Arpeggio
+        arpTime += 1.0f / sampleRate;
+
+        if (arpTime > arpSpeed)
+        {
+            arpTime -= arpSpeed;
+            arpStep = (arpStep + 1) % arpPattern.size();
+        }
+
+        int noteIndex = arpPattern[arpStep];
+        float arpFreq = NoteFreq(chords[currentChord][noteIndex]);
+
+        arpPhase += arpFreq / sampleRate;
+        if (arpPhase > 1.0f)
+            arpPhase -= 1.0f;
+
+        float s1 = sinf(arpPhase * 2.0f * PI);
+        float s2 = sinf(arpPhase * 4.0f * PI);
+
+        float tArp = arpTime / arpSpeed;
+        float arpEnv = expf(-tArp * 6.0f);  // quick decay
+
+        float arpOffset = 0.1f;
+
+        float arpSample = (s1 + 0.3f * s2) * arpEnv * (env / 2.0f + arpOffset);
+
         // Bass note
         float bassFreq = NoteFreq(-12); // low A
 
@@ -137,7 +163,7 @@ void AudioSystem::GenerateSamples(float* buffer, int count)
                 phase -= 1.0f;
         }
 
-        buffer[i] = 0.6f * musicSample + 0.7f * swingSample + 0.2f * bass;
+        buffer[i] = 0.4f * musicSample + 0.7f * arpSample + 0.7f * swingSample + 0.2f * bass;
     }
 }
 

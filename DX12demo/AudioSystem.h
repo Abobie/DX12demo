@@ -51,10 +51,27 @@ private:
     float bassPhase = 0.0f;
     const float noteDuration = 3.0f;
     std::vector<std::vector<int>> chords =
-    { {
-        {0, 3, 7},
+    {
+        {0, 3, 7},     // A minor
+        {-2, 3, 7},    // G
+        {-5, 0, 4},    // F
+        {-7, -2, 3},   // C
+
+        {0, 3, 7},     // repeat but...
         {-2, 3, 7},
-        {-5, 0, 4},
-        {-7, -2, 3}
-    } };
+        {-5, 0, 5},    // small change (E → F)
+        {-7, -2, 2}    // small change (E → D)
+    };
+    // Arpeggio pattern
+    float arpPhase = 0.0f;
+    float arpTime = 0.0f;
+    int arpStep = 0;
+
+    const float arpSpeed = 0.225f; // seconds per note, slightly desynced from main chord changes
+    std::vector<int> arpPattern =
+    {
+        0, 1, 2, 1,   // up-down
+        0, 1, 2, 1,
+        0, 1, 2, 1
+    };
 };
